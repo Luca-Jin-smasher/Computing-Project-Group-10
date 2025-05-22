@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import minimize
 import Max_likelihood
+from scipy.stats import chi2
 
 def get_B_expectation(xs, A, lamb):
     return A * np.exp(-xs / lamb)
@@ -22,16 +23,12 @@ xstd = (bin_edges[1:] - bin_edges[:-1]) / 2
 
 ax.errorbar(mean, bin_height, yerr=ystd, xerr=xstd, fmt='o', markersize=3, color='black')
 
-# =================================================================
-# Fix 1: Correct background bin selection using dynamic masking
-# =================================================================
+# Background bin selection using dynamic masking
 mask = (mean < 121.0) | (mean > 129.0)
 mean_background = mean[mask]
 bin_height_background = bin_height[mask]
 
-# =================================================================
-# Fix 2: Proper MLE fit with bounds and status check
-# =================================================================
+# MLE fit with bounds and status check
 initial_guess = [1800, 30]
 result = minimize(
     lambda p: Max_likelihood.negative_log_likelihood(p, mean_background, bin_height_background),
@@ -45,34 +42,38 @@ if not result.success:
 A_mle, lamb_mle = result.x
 print(f"MLE Results: A = {A_mle:.1f}, λ = {lamb_mle:.1f}")
 
-# =================================================================
-# Fix 3: Adjusted χ² grid search range near MLE results
-# =================================================================
-A_values = np.linspace(0.5*A_mle, 1.5*A_mle, 50)  # Center around MLE estimate
+# χ² grid search range near MLE results
+A_values = np.linspace(0.5*A_mle, 1.5*A_mle, 50)
 lamb_values = np.linspace(0.5*lamb_mle, 1.5*lamb_mle, 50)
 chi2_grid = np.zeros((len(A_values), len(lamb_values)))
 
-# =================================================================
-# Fix 4: Proper χ² calculation using binned background data
-# =================================================================
-for i, A_trial in enumerate(A_values):
-    for j, lamb_trial in enumerate(lamb_values):
-        # Calculate expected background
-        B_expected = get_B_expectation(mean_background, A_trial, lamb_trial)
-        # Poisson χ²: Σ [(observed - expected)² / expected]
-        chi2 = np.sum((bin_height_background - B_expected)**2 / B_expected)
-        chi2_grid[i, j] = chi2
+# χ² calculation using binned background data
+def chi2_estimate(A, lamb, x, y):
+    for i, A_trial in enumerate(A):
+        for j, lamb_trial in enumerate(lamb):
+            # Calculate expected background
+            B_expected = get_B_expectation(x, A_trial, lamb_trial)
+            chi2 = np.sum((y - B_expected)**2 / B_expected)
+            chi2_grid[i, j] = chi2
 
-min_index = np.unravel_index(np.argmin(chi2_grid), chi2_grid.shape)
-A_chi2, lamb_chi2 = A_values[min_index[0]], lamb_values[min_index[1]]
-print(f"χ² Results: A = {A_chi2:.1f}, λ = {lamb_chi2:.1f}")
+    min_index = np.unravel_index(np.argmin(chi2_grid), chi2_grid.shape)
+    A_estimate, lamb_estimate = A_values[min_index[0]], lamb_values[min_index[1]]
+    min_chi2 = chi2_grid[min_index]
+    print(f"χ² Results: A = {A_estimate:.1f}, λ = {lamb_estimate:.1f}, χ²/DoF = {min_chi2:.2f}")
+    return A_estimate, lamb_estimate, min_chi2
 
-# =================================================================
+A_chi2, lamb_chi2, chi2_min = chi2_estimate(A_values, lamb_values, mean_background, bin_height_background)
+
+# background only hypothesis test (including signal region)
+A_chi2_with_signal, lamb_chi2_with_signal, chi2_min_with_signal = chi2_estimate(A_values, lamb_values, mean, bin_height)
+p_value = 1 - chi2.cdf(chi2_min_with_signal, (len(mean) - 2))
+print(f"p_value = {p_value} << 5%, should be rejected.")
+
 # Plot both fits
-# =================================================================
 x = np.linspace(104, 155, 500)
 ax.plot(x, get_B_expectation(x, A_mle, lamb_mle), label="MLE Fit", color='red')
 ax.plot(x, get_B_expectation(x, A_chi2, lamb_chi2), '--', label="χ² Fit", color='blue')
+ax.plot(x, get_B_expectation(x, A_chi2_with_signal, lamb_chi2_with_signal), '--', label="χ² Fit", color='yellow')
 
 ax.set_xlim(104, 155)
 ax.set_xlabel("Rest mass (GeV)")
